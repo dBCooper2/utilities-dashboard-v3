@@ -1,0 +1,16 @@
+## Documentation
+- Finish [[1 - Data Dictionary#Utilities Data]]
+	- Add API Endpoints
+	- Figure out when each API is refreshed
+- Finish [[2 - ETL Pipeline]]
+	- Function Definitions for ETL methods
+		- First Ingestion
+		- Daily Ingestion
+	- Database Manager Class
+	- Scheduler Class
+- Research [[3 - Forecasting Methods]]
+	- How can I accurately create time series from just a mean?
+		- Look into synthetic time series data generation
+	- How to add seasonality?
+		- 
+	- How can I forecast the day ahead?

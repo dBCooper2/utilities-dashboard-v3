@@ -1,0 +1,1 @@
+Given that our data needs to be forecasted to predict day-ahead prices for utilities across the SE USA, 

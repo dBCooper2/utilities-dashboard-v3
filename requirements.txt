@@ -1,0 +1,10 @@
+jupyter
+pandas
+numpy
+matplotlib
+requests
+meteostat
+datetime
+pytz
+dotenv
+seaborn
