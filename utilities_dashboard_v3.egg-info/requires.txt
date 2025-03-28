@@ -8,4 +8,3 @@ datetime
 pytz
 dotenv
 seaborn
-statsmodels

@@ -1,0 +1,29 @@
+Metadata-Version: 2.4
+Name: utilities-dashboard-v3
+Version: 0.1.0
+Summary: Utilities Dashboard with Weather Data Analysis
+Author: Your Name
+Author-email: your.email@example.com
+Classifier: Development Status :: 3 - Alpha
+Classifier: Intended Audience :: Developers
+Classifier: Programming Language :: Python :: 3
+Classifier: Programming Language :: Python :: 3.7
+Classifier: Programming Language :: Python :: 3.8
+Classifier: Programming Language :: Python :: 3.9
+Requires-Python: >=3.7
+Requires-Dist: jupyter
+Requires-Dist: pandas
+Requires-Dist: numpy
+Requires-Dist: matplotlib
+Requires-Dist: requests
+Requires-Dist: meteostat
+Requires-Dist: datetime
+Requires-Dist: pytz
+Requires-Dist: dotenv
+Requires-Dist: seaborn
+Dynamic: author
+Dynamic: author-email
+Dynamic: classifier
+Dynamic: requires-dist
+Dynamic: requires-python
+Dynamic: summary
