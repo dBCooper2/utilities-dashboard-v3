@@ -29,7 +29,14 @@ NYISO: [Real Time Dashboard](<https://www.nyiso.com/real-time-dashboard>)
 	- [EIA Energy Market API](<https://www.eia.gov/opendata/>)
 	- [Electricity Maps Free API](<https://www.electricitymaps.com/free-tier-api>)
 
+- Forecasting Sources
+
+- [Prophet Docs](<https://facebook.github.io/prophet/docs/non-daily_data.html#sub-daily-data>)
+- [AutoARIMA Docs](<https://nixtlaverse.nixtla.io/statsforecast/docs/models/autoarima.html#loading-data>)
+
+- [ARIMA tutorial](<https://www.youtube.com/watch?v=-aCF0_wfVwY&t=968s>)
+
+
 ## API Keys:
 
 [EIA Link](<https://www.eia.gov/opendata/>)
-

@@ -10,3 +10,4 @@ dotenv
 seaborn
 statsmodels
 statsforecast
+prophet
