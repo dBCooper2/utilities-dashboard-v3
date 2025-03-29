@@ -8,3 +8,9 @@ datetime
 pytz
 dotenv
 seaborn
+statsmodels
+statsforecast
+prophet
+scikit-learn
+xgboost
+plotly

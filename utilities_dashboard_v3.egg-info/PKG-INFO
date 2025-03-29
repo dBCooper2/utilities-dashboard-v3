@@ -21,6 +21,12 @@ Requires-Dist: datetime
 Requires-Dist: pytz
 Requires-Dist: dotenv
 Requires-Dist: seaborn
+Requires-Dist: statsmodels
+Requires-Dist: statsforecast
+Requires-Dist: prophet
+Requires-Dist: scikit-learn
+Requires-Dist: xgboost
+Requires-Dist: plotly
 Dynamic: author
 Dynamic: author-email
 Dynamic: classifier

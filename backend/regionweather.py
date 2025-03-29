@@ -72,7 +72,7 @@ class RegionWeather:
     
     # Function to interpolate hourly data to 15-minute increments
     def __interpolate_to_15m(self, df):
-        df_15min = df.resample('15T').interpolate(method='linear')
+        df_15min = df.resample('15min').interpolate(method='linear')
         return df_15min
 
     # Circular mean for wind direction (degrees)

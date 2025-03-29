@@ -3,7 +3,10 @@ This module contains code for forecasting data using the AutoARIMA model.
 
 This module forecasts day-ahead data for a specified column in a specific region.
 
-Data must be passed in as a pandas DataFrame with a datetime index.
+Data must be passed in as a pandas DataFrame with columns:
+- ds: datetime column
+- y: observations column
+- unique_id: identifier column
 '''
 
 import numpy as np
@@ -25,26 +28,34 @@ from statsforecast.arima import arima_string
 
 from backend.regionweather import RegionWeather
 
-class AutoARIMA:
-    def __init__(self, region_name:str, data:pd.DataFrame):
+class AutoARIMAForecast:
+    def __init__(self, region_name:str, data: pd.DataFrame):
         """
         Initialize the AutoARIMA model.
         
         Args:
-            region_name (str): Name of the region being forecasted
-            data (pd.DataFrame): DataFrame with datetime index and values to forecast
+            region_name (str): Name of the region
+            data (pd.DataFrame): DataFrame with columns:
+                - ds: datetime column
+                - y: observations column
+                - unique_id: identifier column
         """
         self.region_name = region_name
+        # Validate input data format
+        required_columns = ['ds', 'y', 'unique_id']
+        if not all(col in data.columns for col in required_columns):
+            raise ValueError(f"DataFrame must contain columns: {required_columns}")
+            
         self.data = data
         self.model = None
         self.fitted = False
         
         # Determine the frequency of the data
-        if isinstance(data.index, pd.DatetimeIndex):
-            self.freq = pd.infer_freq(data.index)
+        if isinstance(data['ds'], pd.Series):
+            self.freq = pd.infer_freq(data['ds'])
             if self.freq is None:
                 # If frequency cannot be inferred, try to determine from index
-                time_diff = data.index[1] - data.index[0]
+                time_diff = data['ds'].iloc[1] - data['ds'].iloc[0]
                 if time_diff.total_seconds() <= 900:  # 15 minutes
                     self.freq = '15min'
                 elif time_diff.total_seconds() <= 3600:  # 1 hour
@@ -52,7 +63,7 @@ class AutoARIMA:
                 else:
                     self.freq = 'D'
         else:
-            raise ValueError("Data index must be datetime")
+            raise ValueError("ds column must contain datetime values")
             
         # Set seasonality based on frequency
         if self.freq == '15min':
@@ -62,21 +73,36 @@ class AutoARIMA:
         else:
             self.season_length = 7  # 7 days
             
-    def fit(self):
+    def _fit(self):
         """
         Fit the AutoARIMA model to the data.
         """
-        # Prepare data for StatsForecast
-        df = pd.DataFrame({
-            'ds': self.data.index,
-            'y': self.data.values,
-            'unique_id': self.region_name
-        })
-        
-        # Initialize and fit the model
-        models = [AutoARIMA(season_length=self.season_length)]
+        print("Validating Data")
+        # Validate data
+        if self.data['y'].isnull().any():
+            raise ValueError("Data contains NaN values")
+        if not np.isfinite(self.data['y']).all():
+            raise ValueError("Data contains infinite values")
+        if not self.data['ds'].is_monotonic_increasing:
+            self.data = self.data.sort_values('ds')
+
+        print("Initializing Model")
+        # Initialize and fit the model with controlled parameters
+        models = [AutoARIMA(
+            season_length=self.season_length,
+            max_p=2,           # Limit maximum AR order
+            max_q=2,           # Limit maximum MA order
+            max_P=1,           # Limit maximum seasonal AR order
+            max_Q=1,           # Limit maximum seasonal MA order
+            max_order=4,       # Limit total order
+            stepwise=True,     # Use stepwise search instead of exhaustive
+            approximation=True # Use approximation for faster fitting
+        )]
+        print("Initializing StatsForecast")
         self.sf = StatsForecast(models=models, freq=self.freq)
-        self.sf.fit(df=df)
+        print("Fitting Model")
+        self.sf.fit(df=self.data)
+        print("Model Fitted")
         self.fitted = True
         self.model = self.sf.fitted_[0,0].model_
         
@@ -91,14 +117,10 @@ class AutoARIMA:
             pd.DataFrame: DataFrame containing the forecasts
         """
         if not self.fitted:
-            self.fit()
+            self._fit()
             
         # Generate forecasts
-        forecast_df = self.sf.forecast(horizon=horizon)
-        
-        # Convert to DataFrame with datetime index
-        forecast_df = forecast_df.set_index('ds')
-        forecast_df = forecast_df.rename(columns={'AutoARIMA': 'forecast'})
+        forecast_df = self.sf.forecast(df=self.data, h=horizon)
         
         return forecast_df
     
@@ -145,9 +167,9 @@ class AutoARIMA:
         
         plt.figure(figsize=(12, 6))
         if include_history:
-            plt.plot(self.data.index, self.data.values, label='Historical')
-        plt.plot(forecast_df.index, forecast_df['forecast'], label='Forecast')
-        plt.title(f'Forecast for {self.region_name}')
+            plt.plot(self.data['ds'], self.data['y'], label='Historical')
+        plt.plot(forecast_df['ds'], forecast_df['AutoARIMA'], label='Forecast')
+        plt.title(f'Forecast for {self.data["unique_id"].iloc[0]}')
         plt.xlabel('Date')
         plt.ylabel('Value')
         plt.legend()
@@ -183,50 +205,44 @@ class AutoARIMA:
             
         # Split data into train and test sets
         split_idx = int(len(self.data) * (1 - test_size))
-        train_data = self.data[:split_idx]
-        test_data = self.data[split_idx:]
+        train_data = self.data.iloc[:split_idx]
+        test_data = self.data.iloc[split_idx:]
         
         # Fit model on training data
-        train_df = pd.DataFrame({
-            'ds': train_data.index,
-            'y': train_data.values,
-            'unique_id': self.region_name
-        })
-        
         models = [AutoARIMA(season_length=self.season_length)]
         sf = StatsForecast(models=models, freq=self.freq)
-        sf.fit(df=train_df)
+        sf.fit(df=train_data)
         
         # Generate predictions for test period
         horizon = len(test_data)
         forecast_df = sf.forecast(horizon=horizon)
-        forecast_df = forecast_df.set_index('ds')
-        forecast_df = forecast_df.rename(columns={'AutoARIMA': 'forecast'})
         
         # Calculate residuals
-        residuals = test_data - forecast_df['forecast']
+        residuals = test_data['y'].values - forecast_df['AutoARIMA'].values
         
         # Calculate metrics
         metrics = {
             'mae': np.mean(np.abs(residuals)),  # Mean Absolute Error
             'rmse': np.sqrt(np.mean(residuals**2)),  # Root Mean Square Error
-            'mape': np.mean(np.abs(residuals / test_data)) * 100,  # Mean Absolute Percentage Error
-            'r2': 1 - np.sum(residuals**2) / np.sum((test_data - np.mean(test_data))**2),  # R-squared
+            'mape': np.mean(np.abs(residuals / test_data['y'].values)) * 100,  # Mean Absolute Percentage Error
+            'r2': 1 - np.sum(residuals**2) / np.sum((test_data['y'].values - np.mean(test_data['y'].values))**2),  # R-squared
             'aic': self.model.aic,  # Akaike Information Criterion
             'bic': self.model.bic,  # Bayesian Information Criterion
         }
         
         # Create DataFrames for results
         predictions_df = pd.DataFrame({
-            'actual': test_data,
-            'predicted': forecast_df['forecast'],
+            'ds': test_data['ds'],
+            'actual': test_data['y'],
+            'predicted': forecast_df['AutoARIMA'],
             'residual': residuals
         })
         
         residuals_df = pd.DataFrame({
+            'ds': test_data['ds'],
             'residual': residuals,
             'residual_abs': np.abs(residuals),
-            'residual_pct': residuals / test_data * 100
+            'residual_pct': residuals / test_data['y'].values * 100
         })
         
         return {
@@ -248,18 +264,18 @@ class AutoARIMA:
         fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 10))
         
         # Plot actual vs predicted
-        ax1.plot(results['predictions'].index, results['predictions']['actual'], 
+        ax1.plot(results['predictions']['ds'], results['predictions']['actual'], 
                 label='Actual', alpha=0.7)
-        ax1.plot(results['predictions'].index, results['predictions']['predicted'], 
+        ax1.plot(results['predictions']['ds'], results['predictions']['predicted'], 
                 label='Predicted', alpha=0.7)
-        ax1.set_title(f'Actual vs Predicted Values for {self.region_name}')
+        ax1.set_title(f'Actual vs Predicted Values for {self.data["unique_id"].iloc[0]}')
         ax1.set_xlabel('Date')
         ax1.set_ylabel('Value')
         ax1.legend()
         ax1.grid(True)
         
         # Plot residuals
-        ax2.plot(results['predictions'].index, results['predictions']['residual'], 
+        ax2.plot(results['predictions']['ds'], results['predictions']['residual'], 
                 label='Residuals', color='red', alpha=0.7)
         ax2.axhline(y=0, color='black', linestyle='--', alpha=0.3)
         ax2.set_title('Residuals Over Time')
