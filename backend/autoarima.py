@@ -507,16 +507,20 @@ class AutoARIMAForecast:
         
         return adf_result
     
-    def evaluate(self, test_size=0.2, metrics=None):
+    def evaluate(self, h=12, step_size=12, n_windows=5, metrics=None):
         """
-        Evaluate the model performance using a train-test split of the initial data.
+        Evaluate the model using time series cross-validation as described in the Nixtla documentation.
         
         Parameters:
         -----------
-        test_size : float, optional
-            Proportion of the dataset to include in the test split. Default is 0.2 (20%).
+        h : int, optional
+            Forecast horizon (number of periods to forecast). Default is 12.
+        step_size : int, optional
+            Step size between each window. How often to run the forecasting process. Default is 12.
+        n_windows : int, optional
+            Number of windows for cross-validation. How many forecasting processes in the past to evaluate. Default is 5.
         metrics : list, optional
-            List of metrics to calculate. If None, uses MAE, MAPE, RMSE, and SMAPE.
+            List of metrics to calculate. If None, uses MAE, MAPE, MASE, RMSE, and SMAPE.
             
         Returns:
         --------
@@ -536,148 +540,229 @@ class AutoARIMAForecast:
             raise ValueError(error_msg)
         
         import pandas as pd
-        import numpy as np
         from functools import partial
         import utilsforecast.losses as ufl
         from utilsforecast.evaluation import evaluate
         
         region_suffix = f" for region {self.region_name}" if self.region_name else ""
-        print(f"Evaluating model performance{region_suffix} with test_size={test_size}...")
-        self.logger.info(f"Evaluating model performance{region_suffix} with test_size={test_size}")
+        print(f"Performing cross-validation{region_suffix} with h={h}, step_size={step_size}, n_windows={n_windows}...")
+        self.logger.info(f"Performing cross-validation{region_suffix} with h={h}, step_size={step_size}, n_windows={n_windows}")
         
-        # Sort data by date to ensure proper time ordering
-        sorted_data = self.data.sort_values('ds').reset_index(drop=True)
-        
-        # Calculate the split point
-        split_idx = int(len(sorted_data) * (1 - test_size))
-        if split_idx <= 0 or split_idx >= len(sorted_data):
-            error_msg = f"Invalid test_size: {test_size} results in invalid split index: {split_idx} for dataset of size {len(sorted_data)}"
-            print(f"Error: {error_msg}")
-            self.logger.error(error_msg)
-            raise ValueError(error_msg)
-        
-        # Split the data
-        train_df = sorted_data.iloc[:split_idx].copy()
-        test_df = sorted_data.iloc[split_idx:].copy()
-        
-        print(f"Data split: {len(train_df)} training points, {len(test_df)} test points")
-        self.logger.info(f"Data split: {len(train_df)} training points, {len(test_df)} test points")
-        
-        # Save original model state
+        # Store original model state to restore later
         original_data = self.data.copy()
         original_forecast_df = self.forecast_df.copy() if self.forecast_df is not None else None
         
         try:
-            # Re-fit the model on the training data
-            print("Fitting model on training data...")
-            self.logger.info("Fitting model on training data")
-            self.fit(train_df)
+            # Perform cross-validation using StatsForecast's cross_validation method
+            print("Executing cross-validation...")
+            self.logger.info("Executing cross-validation")
             
-            # Generate forecast for the test period
-            print(f"Generating forecast for {len(test_df)} test points...")
-            self.logger.info(f"Generating forecast for {len(test_df)} test points")
+            # Use the model's cross_validation method if available
+            if hasattr(self.model, 'cross_validation'):
+                cv_df = self.model.cross_validation(
+                    df=self.data,
+                    h=h,
+                    step_size=step_size,
+                    n_windows=n_windows
+                )
+                print(f"Cross-validation generated {len(cv_df)} rows")
+                self.logger.info(f"Cross-validation generated {len(cv_df)} rows")
+            else:
+                # If cross_validation is not available, fall back to manual approach
+                print("StatsForecast cross_validation method not available. Implementing manual approach.")
+                self.logger.warning("StatsForecast cross_validation method not available. Implementing manual approach.")
+                
+                # Sort data chronologically
+                sorted_data = self.data.sort_values(['unique_id', 'ds']).reset_index(drop=True)
+                
+                # Create empty dataframe for cross-validation results
+                cv_df = pd.DataFrame()
+                
+                # Identify unique time series
+                unique_ids = sorted_data['unique_id'].unique()
+                
+                for uid in unique_ids:
+                    uid_data = sorted_data[sorted_data['unique_id'] == uid].copy()
+                    
+                    # Calculate number of observations
+                    n_obs = len(uid_data)
+                    
+                    # Check if we have enough data for cross-validation
+                    if n_obs <= h + step_size * (n_windows - 1):
+                        print(f"Warning: Not enough data for {uid} with {n_obs} observations. Need at least {h + step_size * (n_windows - 1) + 1}.")
+                        self.logger.warning(f"Not enough data for {uid} with {n_obs} observations")
+                        continue
+                    
+                    # Implement sliding window approach
+                    for i in range(n_windows):
+                        # Calculate cutoff point
+                        cutoff_idx = n_obs - h - step_size * (n_windows - i - 1)
+                        
+                        # Split into train and test
+                        train_data = uid_data.iloc[:cutoff_idx].copy()
+                        test_data = uid_data.iloc[cutoff_idx:cutoff_idx + h].copy()
+                        
+                        if len(train_data) < 2:
+                            print(f"Warning: Training data too small for window {i+1}. Skipping.")
+                            self.logger.warning(f"Training data too small for window {i+1}. Skipping.")
+                            continue
+                        
+                        # Get cutoff date
+                        cutoff_date = train_data['ds'].max()
+                        
+                        # Create a temporary model and fit to training data
+                        from statsforecast import StatsForecast
+                        from statsforecast.models import AutoARIMA
+                        
+                        temp_model = StatsForecast(
+                            models=[AutoARIMA(season_length=self.season_length)],
+                            freq=self.freq,
+                            n_jobs=-1
+                        )
+                        
+                        # Fit the temporary model
+                        temp_model.fit(train_data)
+                        
+                        # Generate forecast
+                        forecast_df = temp_model.forecast(h=h)
+                        
+                        # Merge with actual values
+                        forecast_df['cutoff'] = cutoff_date
+                        merged = test_data.merge(
+                            forecast_df[['unique_id', 'ds', 'AutoARIMA', 'cutoff']],
+                            on=['unique_id', 'ds'],
+                            how='left'
+                        )
+                        
+                        # Add to cross-validation dataframe
+                        cv_df = pd.concat([cv_df, merged])
             
-            # Determine the forecast horizon needed to cover the test period
-            if self.freq == '15min':
-                h = len(test_df)
-            elif self.freq == 'H':
-                h = len(test_df)
-            else:  # 'D'
-                h = len(test_df)
+            # If no cross-validation results, return empty metrics
+            if len(cv_df) == 0:
+                print("Warning: No cross-validation results generated.")
+                self.logger.warning("No cross-validation results generated")
+                return pd.DataFrame()
             
-            # Generate forecast
-            forecast_df = self.forecast(h=h)
-            
-            # Default metrics
+            # Set up default metrics if not provided
             if metrics is None:
                 metrics = [
-                    ufl.mae, ufl.mape, 
+                    ufl.mae, 
+                    ufl.mape, 
                     partial(ufl.mase, seasonality=self.season_length), 
-                    ufl.rmse, ufl.smape
+                    ufl.rmse, 
+                    ufl.smape
                 ]
             
-            # Prepare evaluation data by merging test data with forecasts
-            print(f"Merging test data with forecasts...")
-            self.logger.info(f"Merging test data with forecasts")
+            # Evaluate performance using the metrics
+            print("Computing evaluation metrics...")
+            self.logger.info("Computing evaluation metrics")
             
-            # Ensure forecast dates match test dates
-            merged_df = test_df.merge(forecast_df, on=['unique_id', 'ds'], how='inner')
+            # Prepare data for evaluation - ensure it has the columns: unique_id, ds, y, AutoARIMA
+            # Check if 'y' and 'AutoARIMA' columns exist
+            if 'y' not in cv_df.columns or 'AutoARIMA' not in cv_df.columns:
+                print("Warning: Required columns missing in cross-validation results.")
+                self.logger.warning("Required columns missing in cross-validation results")
+                return pd.DataFrame()
             
-            if len(merged_df) == 0:
-                print("WARNING: No matching dates between test data and forecast. Checking for date alignment issues...")
-                self.logger.warning("No matching dates between test data and forecast")
+            # Check if we have the evaluate function from utilsforecast
+            try:
+                result = evaluate(
+                    cv_df,
+                    metrics=metrics,
+                    train_df=self.data
+                )
+                print("Evaluation complete")
+                self.logger.info("Evaluation complete")
+            except Exception as e:
+                print(f"Error during evaluation: {str(e)}")
+                self.logger.error(f"Error during evaluation: {str(e)}")
                 
-                # Print date ranges to debug
-                test_dates = pd.to_datetime(test_df['ds']).sort_values()
-                forecast_dates = pd.to_datetime(forecast_df['ds']).sort_values()
+                # Fall back to manual calculation of metrics
+                print("Falling back to manual calculation of metrics")
+                self.logger.info("Falling back to manual calculation of metrics")
                 
-                print(f"Test data date range: {test_dates.min()} to {test_dates.max()}")
-                print(f"Forecast date range: {forecast_dates.min()} to {forecast_dates.max()}")
+                result = pd.DataFrame()
                 
-                self.logger.info(f"Test data date range: {test_dates.min()} to {test_dates.max()}")
-                self.logger.info(f"Forecast date range: {forecast_dates.min()} to {forecast_dates.max()}")
-                
-                # Try a different approach - use closest dates if exact matches fail
-                print("Attempting alternative evaluation approach with closest dates...")
-                self.logger.info("Attempting alternative evaluation approach with closest dates")
-                
-                # Create a simple DataFrame with accuracy metrics
-                alternative_metrics = pd.DataFrame(columns=['unique_id', 'metric', 'value'])
-                
-                for uid in test_df['unique_id'].unique():
-                    test_subset = test_df[test_df['unique_id'] == uid].sort_values('ds')
-                    forecast_subset = forecast_df[forecast_df['unique_id'] == uid].sort_values('ds')
+                # Group by unique_id to calculate metrics for each time series
+                for uid in cv_df['unique_id'].unique():
+                    uid_cv = cv_df[cv_df['unique_id'] == uid]
                     
-                    # If we have different number of points, take the minimum
-                    min_points = min(len(test_subset), len(forecast_subset))
-                    if min_points > 0:
-                        # Calculate simple metrics manually
-                        actuals = test_subset['y'].values[:min_points]
-                        predictions = forecast_subset[forecast_subset.columns[2]].values[:min_points]
+                    # Extract actual and predicted values
+                    y_true = uid_cv['y'].values
+                    y_pred = uid_cv['AutoARIMA'].values
+                    
+                    # Filter out NaN values
+                    valid = ~(np.isnan(y_true) | np.isnan(y_pred))
+                    y_true = y_true[valid]
+                    y_pred = y_pred[valid]
+                    
+                    if len(y_true) == 0:
+                        print(f"Warning: No valid data points for {uid} after filtering NaNs")
+                        self.logger.warning(f"No valid data points for {uid} after filtering NaNs")
+                        continue
+                    
+                    # Calculate metrics
+                    from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
+                    import numpy as np
+                    
+                    # MAE
+                    mae = mean_absolute_error(y_true, y_pred)
+                    
+                    # RMSE
+                    rmse = np.sqrt(mean_squared_error(y_true, y_pred))
+                    
+                    # MAPE (handle zeros)
+                    non_zero = y_true != 0
+                    if np.any(non_zero):
+                        mape = np.mean(np.abs((y_true[non_zero] - y_pred[non_zero]) / y_true[non_zero])) * 100
+                    else:
+                        mape = None
+                    
+                    # SMAPE
+                    smape = np.mean(200.0 * np.abs(y_pred - y_true) / (np.abs(y_pred) + np.abs(y_true)))
+                    
+                    # R2
+                    r2 = r2_score(y_true, y_pred)
+                    
+                    # MASE calculation (basic implementation)
+                    mase = None
+                    try:
+                        uid_train = self.data[self.data['unique_id'] == uid].sort_values('ds')
+                        y_train = uid_train['y'].values
                         
-                        # Calculate MAE
-                        mae = np.mean(np.abs(actuals - predictions))
+                        # Calculate in-sample naive forecast errors (one-step)
+                        naive_errors = np.abs(y_train[1:] - y_train[:-1])
                         
-                        # Add to results
-                        alternative_metrics = pd.concat([
-                            alternative_metrics,
-                            pd.DataFrame({
-                                'unique_id': [uid],
-                                'metric': ['mae'],
-                                'value': [mae]
-                            })
-                        ])
-                
-                if len(alternative_metrics) > 0:
-                    print("Alternative evaluation complete")
-                    self.logger.info("Alternative evaluation complete")
-                    result = alternative_metrics
-                else:
-                    error_msg = "Unable to evaluate model - no matching data points between test and forecast"
-                    print(f"Error: {error_msg}")
-                    self.logger.error(error_msg)
-                    raise ValueError(error_msg)
-            else:
-                # Evaluate with standard approach
-                print(f"Computing evaluation metrics for AutoARIMA model...")
-                self.logger.info(f"Computing evaluation metrics for AutoARIMA model")
-                result = evaluate(merged_df, metrics=metrics, train_df=train_df)
+                        # Calculate mean absolute in-sample naive error
+                        if len(naive_errors) > 0:
+                            mean_naive_error = np.mean(naive_errors)
+                            
+                            if mean_naive_error > 0:
+                                # MASE = MAE / mean_naive_error
+                                mase = mae / mean_naive_error
+                    except Exception as mase_err:
+                        print(f"Error calculating MASE: {str(mase_err)}")
+                        self.logger.error(f"Error calculating MASE: {str(mase_err)}")
+                    
+                    # Add to results dataframe
+                    metrics_df = pd.DataFrame({
+                        'unique_id': [uid] * 5,
+                        'metric': ['mae', 'mape', 'mase', 'rmse', 'smape'],
+                        'AutoARIMA': [mae, mape, mase, rmse, smape]
+                    })
+                    
+                    result = pd.concat([result, metrics_df])
             
-            print("Evaluation complete")
-            self.logger.info("Evaluation complete")
+            return result
             
         finally:
             # Restore original model state
             self.data = original_data
             self.forecast_df = original_forecast_df
             
-            # Re-fit the model on the full dataset to ensure it's in the same state as before
-            if original_forecast_df is not None:
-                print("Restoring model to original state with full dataset...")
-                self.logger.info("Restoring model to original state with full dataset")
-                self.fit(original_data)
-        
-        return result
+            # Ensure the model is in the same state as before
+            print("Restoring model to original state...")
+            self.logger.info("Restoring model to original state")
     
     def plot_forecast(self, test_df=None, figsize=(12, 6)):
         """
