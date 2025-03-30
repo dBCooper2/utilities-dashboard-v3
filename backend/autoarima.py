@@ -540,6 +540,7 @@ class AutoARIMAForecast:
             raise ValueError(error_msg)
         
         import pandas as pd
+        import numpy as np
         from functools import partial
         import utilsforecast.losses as ufl
         from utilsforecast.evaluation import evaluate
@@ -641,7 +642,7 @@ class AutoARIMAForecast:
             if len(cv_df) == 0:
                 print("Warning: No cross-validation results generated.")
                 self.logger.warning("No cross-validation results generated")
-                return pd.DataFrame()
+                return pd.DataFrame(columns=['unique_id', 'metric', 'value'])
             
             # Set up default metrics if not provided
             if metrics is None:
@@ -662,7 +663,7 @@ class AutoARIMAForecast:
             if 'y' not in cv_df.columns or 'AutoARIMA' not in cv_df.columns:
                 print("Warning: Required columns missing in cross-validation results.")
                 self.logger.warning("Required columns missing in cross-validation results")
-                return pd.DataFrame()
+                return pd.DataFrame(columns=['unique_id', 'metric', 'value'])
             
             # Check if we have the evaluate function from utilsforecast
             try:
@@ -681,77 +682,77 @@ class AutoARIMAForecast:
                 print("Falling back to manual calculation of metrics")
                 self.logger.info("Falling back to manual calculation of metrics")
                 
-                result = pd.DataFrame()
+                from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
+                
+                result = pd.DataFrame(columns=['unique_id', 'metric', 'value'])
                 
                 # Group by unique_id to calculate metrics for each time series
                 for uid in cv_df['unique_id'].unique():
                     uid_cv = cv_df[cv_df['unique_id'] == uid]
                     
-                    # Extract actual and predicted values
-                    y_true = uid_cv['y'].values
-                    y_pred = uid_cv['AutoARIMA'].values
-                    
-                    # Filter out NaN values
-                    valid = ~(np.isnan(y_true) | np.isnan(y_pred))
-                    y_true = y_true[valid]
-                    y_pred = y_pred[valid]
-                    
-                    if len(y_true) == 0:
-                        print(f"Warning: No valid data points for {uid} after filtering NaNs")
-                        self.logger.warning(f"No valid data points for {uid} after filtering NaNs")
-                        continue
-                    
-                    # Calculate metrics
-                    from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
-                    import numpy as np
-                    
-                    # MAE
-                    mae = mean_absolute_error(y_true, y_pred)
-                    
-                    # RMSE
-                    rmse = np.sqrt(mean_squared_error(y_true, y_pred))
-                    
-                    # MAPE (handle zeros)
-                    non_zero = y_true != 0
-                    if np.any(non_zero):
-                        mape = np.mean(np.abs((y_true[non_zero] - y_pred[non_zero]) / y_true[non_zero])) * 100
-                    else:
-                        mape = None
-                    
-                    # SMAPE
-                    smape = np.mean(200.0 * np.abs(y_pred - y_true) / (np.abs(y_pred) + np.abs(y_true)))
-                    
-                    # R2
-                    r2 = r2_score(y_true, y_pred)
-                    
-                    # MASE calculation (basic implementation)
-                    mase = None
+                    # Extract actual and predicted values as numeric types
                     try:
-                        uid_train = self.data[self.data['unique_id'] == uid].sort_values('ds')
-                        y_train = uid_train['y'].values
+                        y_true = pd.to_numeric(uid_cv['y'], errors='coerce').values
+                        y_pred = pd.to_numeric(uid_cv['AutoARIMA'], errors='coerce').values
                         
-                        # Calculate in-sample naive forecast errors (one-step)
-                        naive_errors = np.abs(y_train[1:] - y_train[:-1])
-                        
-                        # Calculate mean absolute in-sample naive error
-                        if len(naive_errors) > 0:
-                            mean_naive_error = np.mean(naive_errors)
+                        # Filter out NaN values
+                        valid_mask = ~(np.isnan(y_true) | np.isnan(y_pred))
+                        if np.any(valid_mask):
+                            y_true_valid = y_true[valid_mask]
+                            y_pred_valid = y_pred[valid_mask]
                             
-                            if mean_naive_error > 0:
-                                # MASE = MAE / mean_naive_error
-                                mase = mae / mean_naive_error
-                    except Exception as mase_err:
-                        print(f"Error calculating MASE: {str(mase_err)}")
-                        self.logger.error(f"Error calculating MASE: {str(mase_err)}")
-                    
-                    # Add to results dataframe
-                    metrics_df = pd.DataFrame({
-                        'unique_id': [uid] * 5,
-                        'metric': ['mae', 'mape', 'mase', 'rmse', 'smape'],
-                        'AutoARIMA': [mae, mape, mase, rmse, smape]
-                    })
-                    
-                    result = pd.concat([result, metrics_df])
+                            if len(y_true_valid) > 0:
+                                # Calculate metrics
+                                mae = mean_absolute_error(y_true_valid, y_pred_valid)
+                                rmse = np.sqrt(mean_squared_error(y_true_valid, y_pred_valid))
+                                
+                                # MAPE (handle zeros)
+                                non_zero = y_true_valid != 0
+                                if np.any(non_zero):
+                                    mape = np.mean(np.abs((y_true_valid[non_zero] - y_pred_valid[non_zero]) / y_true_valid[non_zero])) * 100
+                                else:
+                                    mape = np.nan
+                                
+                                # SMAPE
+                                smape = np.mean(200.0 * np.abs(y_pred_valid - y_true_valid) / (np.abs(y_pred_valid) + np.abs(y_true_valid) + 1e-8))
+                                
+                                # MASE calculation (basic implementation)
+                                mase = np.nan
+                                try:
+                                    uid_train = self.data[self.data['unique_id'] == uid].sort_values('ds')
+                                    y_train = pd.to_numeric(uid_train['y'], errors='coerce').values
+                                    
+                                    # Calculate in-sample naive forecast errors (one-step)
+                                    naive_errors = np.abs(y_train[1:] - y_train[:-1])
+                                    
+                                    # Calculate mean absolute in-sample naive error
+                                    if len(naive_errors) > 0:
+                                        mean_naive_error = np.mean(naive_errors)
+                                        
+                                        if mean_naive_error > 0:
+                                            # MASE = MAE / mean_naive_error
+                                            mase = mae / mean_naive_error
+                                except Exception as mase_err:
+                                    print(f"Error calculating MASE: {str(mase_err)}")
+                                    self.logger.error(f"Error calculating MASE: {str(mase_err)}")
+                                
+                                # Add to results dataframe
+                                metrics_df = pd.DataFrame({
+                                    'unique_id': [uid] * 5,
+                                    'metric': ['mae', 'mape', 'mase', 'rmse', 'smape'],
+                                    'value': [mae, mape, mase, rmse, smape]
+                                })
+                                
+                                result = pd.concat([result, metrics_df])
+                            else:
+                                print(f"Warning: No valid data points for {uid} after filtering NaNs")
+                                self.logger.warning(f"No valid data points for {uid} after filtering NaNs")
+                        else:
+                            print(f"Warning: All data points for {uid} are NaN")
+                            self.logger.warning(f"All data points for {uid} are NaN")
+                    except Exception as calc_err:
+                        print(f"Error calculating metrics for {uid}: {str(calc_err)}")
+                        self.logger.error(f"Error calculating metrics for {uid}: {str(calc_err)}")
             
             return result
             
