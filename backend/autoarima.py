@@ -1,293 +1,384 @@
-'''
-This module contains code for forecasting data using the AutoARIMA model.
-
-This module forecasts day-ahead data for a specified column in a specific region.
-
-Data must be passed in as a pandas DataFrame with columns:
-- ds: datetime column
-- y: observations column
-- unique_id: identifier column
-'''
-
-import numpy as np
-import pandas as pd
-import scipy.stats as stats
-import matplotlib.pyplot as plt
-import seaborn as sns
-import datetime as dt
-from typing import Dict, Union, Tuple
-
-from statsmodels.graphics.tsaplots import plot_acf
-from statsmodels.graphics.tsaplots import plot_pacf
-from statsmodels.tsa.stattools import adfuller
-from statsmodels.tsa.seasonal import seasonal_decompose 
-
-from statsforecast import StatsForecast
-from statsforecast.models import AutoARIMA
-from statsforecast.arima import arima_string
-
-from backend.regionweather import RegionWeather
-
 class AutoARIMAForecast:
-    def __init__(self, region_name:str, data: pd.DataFrame):
+    def __init__(self, region_name=None, initial_df=None, season_length=None, log_level='INFO'):
         """
-        Initialize the AutoARIMA model.
+        Initialize the AutoARIMA forecasting model.
         
-        Args:
-            region_name (str): Name of the region
-            data (pd.DataFrame): DataFrame with columns:
-                - ds: datetime column
-                - y: observations column
-                - unique_id: identifier column
+        Parameters:
+        -----------
+        region_name : str, optional
+            The name of the region being forecasted.
+        initial_df : pandas.DataFrame, optional
+            Initial dataframe to process during initialization.
+        season_length : int, optional
+            The seasonal period of the time series. If None, it will be inferred from the data.
+        log_level : str, optional
+            Logging level ('DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL').
         """
-        self.region_name = region_name
-        # Validate input data format
-        required_columns = ['ds', 'y', 'unique_id']
-        if not all(col in data.columns for col in required_columns):
-            raise ValueError(f"DataFrame must contain columns: {required_columns}")
-            
-        self.data = data
+        import logging
+        import sys
+        
+        # Setup logging
+        self.logger = logging.getLogger(f"AutoARIMAForecast_{region_name if region_name else 'default'}")
+        self.logger.setLevel(getattr(logging, log_level))
+        
+        # Create handler if not already present
+        if not self.logger.handlers:
+            handler = logging.StreamHandler(sys.stdout)
+            formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+            handler.setFormatter(formatter)
+            self.logger.addHandler(handler)
+        
         self.model = None
+        self.season_length = season_length
+        self.data = None
+        self.freq = None
+        self.forecast_df = None
         self.fitted = False
+        self.region_name = region_name
         
-        # Determine the frequency of the data
-        if isinstance(data['ds'], pd.Series):
-            self.freq = pd.infer_freq(data['ds'])
-            if self.freq is None:
-                # If frequency cannot be inferred, try to determine from index
-                time_diff = data['ds'].iloc[1] - data['ds'].iloc[0]
-                if time_diff.total_seconds() <= 900:  # 15 minutes
-                    self.freq = '15min'
-                elif time_diff.total_seconds() <= 3600:  # 1 hour
-                    self.freq = 'H'
-                else:
-                    self.freq = 'D'
+        print(f"Initializing AutoARIMA model for region: {region_name if region_name else 'default'}")
+        self.logger.info(f"Initializing AutoARIMA model for region: {region_name if region_name else 'default'}")
+        
+        # Process initial dataframe if provided
+        if initial_df is not None:
+            print(f"Processing initial dataframe with {len(initial_df)} rows")
+            self.logger.info(f"Processing initial dataframe with {len(initial_df)} rows")
+            self.fit(initial_df)
+    
+    def _detect_frequency(self, df):
+        """
+        Detect the frequency of the time series data.
+        
+        Parameters:
+        -----------
+        df : pandas.DataFrame
+            DataFrame containing the time series data with a 'ds' column.
+            
+        Returns:
+        --------
+        freq : str
+            The detected frequency: '15min', 'H', or 'D'.
+        """
+        import pandas as pd
+        
+        print("Detecting time series frequency...")
+        self.logger.info("Detecting time series frequency")
+        
+        # Convert 'ds' to datetime if it's not already
+        df['ds'] = pd.to_datetime(df['ds'])
+        
+        # Get the time differences
+        diff = df['ds'].diff().dropna()
+        
+        # Calculate the most common time difference
+        most_common_diff = diff.mode()[0]
+        
+        # Determine the frequency based on the most common difference
+        if most_common_diff <= pd.Timedelta(minutes=15):
+            freq = '15min'
+        elif most_common_diff <= pd.Timedelta(hours=1):
+            freq = 'H'
         else:
-            raise ValueError("ds column must contain datetime values")
+            freq = 'D'
             
-        # Set seasonality based on frequency
-        if self.freq == '15min':
-            self.season_length = 96  # 24 hours * 4 (15-min intervals)
-        elif self.freq == 'H':
-            self.season_length = 24  # 24 hours
-        else:
-            self.season_length = 7  # 7 days
-            
-    def _fit(self):
-        """
-        Fit the AutoARIMA model to the data.
-        """
-        print("Validating Data")
-        # Validate data
-        if self.data['y'].isnull().any():
-            raise ValueError("Data contains NaN values")
-        if not np.isfinite(self.data['y']).all():
-            raise ValueError("Data contains infinite values")
-        if not self.data['ds'].is_monotonic_increasing:
-            self.data = self.data.sort_values('ds')
-
-        print("Initializing Model")
-        # Initialize and fit the model with controlled parameters
-        models = [AutoARIMA(
-            season_length=self.season_length,
-            max_p=2,           # Limit maximum AR order
-            max_q=2,           # Limit maximum MA order
-            max_P=1,           # Limit maximum seasonal AR order
-            max_Q=1,           # Limit maximum seasonal MA order
-            max_order=4,       # Limit total order
-            stepwise=True,     # Use stepwise search instead of exhaustive
-            approximation=True # Use approximation for faster fitting
-        )]
-        print("Initializing StatsForecast")
-        self.sf = StatsForecast(models=models, freq=self.freq)
-        print("Fitting Model")
-        self.sf.fit(df=self.data)
-        print("Model Fitted")
-        self.fitted = True
-        self.model = self.sf.fitted_[0,0].model_
-        
-    def forecast(self, horizon:int=24) -> pd.DataFrame:
-        """
-        Generate forecasts for the specified horizon.
-        
-        Args:
-            horizon (int): Number of periods to forecast
-            
-        Returns:
-            pd.DataFrame: DataFrame containing the forecasts
-        """
-        if not self.fitted:
-            self._fit()
-            
-        # Generate forecasts
-        forecast_df = self.sf.forecast(df=self.data, h=horizon)
-        
-        return forecast_df
+        print(f"Detected frequency: {freq}")
+        self.logger.info(f"Detected frequency: {freq}")
+        return freq
     
-    def get_forecast_15min(self) -> pd.DataFrame:
+    def _detect_season_length(self, freq):
         """
-        Get 15-minute resolution forecasts for the next day.
+        Determine the appropriate season length based on frequency.
         
-        Returns:
-            pd.DataFrame: DataFrame with 15-minute forecasts
-        """
-        if self.freq != '15min':
-            raise ValueError("Data must be in 15-minute resolution")
-        return self.forecast(horizon=96)  # 24 hours * 4 (15-min intervals)
-    
-    def get_forecast_hourly(self) -> pd.DataFrame:
-        """
-        Get hourly resolution forecasts for the next day.
-        
-        Returns:
-            pd.DataFrame: DataFrame with hourly forecasts
-        """
-        if self.freq not in ['15min', 'H']:
-            raise ValueError("Data must be in 15-minute or hourly resolution")
-        return self.forecast(horizon=24)  # 24 hours
-    
-    def get_forecast_daily(self) -> pd.DataFrame:
-        """
-        Get daily resolution forecasts for the next week.
-        
-        Returns:
-            pd.DataFrame: DataFrame with daily forecasts
-        """
-        return self.forecast(horizon=7)  # 7 days
-    
-    def plot_forecast(self, horizon:int=24, include_history:bool=True):
-        """
-        Plot the forecasts along with historical data.
-        
-        Args:
-            horizon (int): Number of periods to forecast
-            include_history (bool): Whether to include historical data in the plot
-        """
-        forecast_df = self.forecast(horizon=horizon)
-        
-        plt.figure(figsize=(12, 6))
-        if include_history:
-            plt.plot(self.data['ds'], self.data['y'], label='Historical')
-        plt.plot(forecast_df['ds'], forecast_df['AutoARIMA'], label='Forecast')
-        plt.title(f'Forecast for {self.data["unique_id"].iloc[0]}')
-        plt.xlabel('Date')
-        plt.ylabel('Value')
-        plt.legend()
-        plt.grid(True)
-        plt.show()
-        
-    def get_model_summary(self) -> str:
-        """
-        Get a summary of the fitted ARIMA model.
-        
-        Returns:
-            str: String containing the model summary
-        """
-        if not self.fitted:
-            raise ValueError("Model must be fitted first")
-        return arima_string(self.model)
-        
-    def evaluate_model(self, test_size:float=0.2) -> Dict[str, Union[float, pd.DataFrame]]:
-        """
-        Evaluate the model's performance using common time series metrics.
-        
-        Args:
-            test_size (float): Proportion of data to use for testing (default: 0.2)
+        Parameters:
+        -----------
+        freq : str
+            The frequency of the time series.
             
         Returns:
-            Dict containing:
-                - metrics: Dictionary of evaluation metrics
-                - predictions: DataFrame with actual and predicted values
-                - residuals: DataFrame with residuals and their statistics
+        --------
+        season_length : int
+            The seasonal period for the given frequency.
         """
-        if not self.fitted:
-            self.fit()
-            
-        # Split data into train and test sets
-        split_idx = int(len(self.data) * (1 - test_size))
-        train_data = self.data.iloc[:split_idx]
-        test_data = self.data.iloc[split_idx:]
+        print("Determining seasonal period...")
+        self.logger.info("Determining seasonal period")
         
-        # Fit model on training data
+        if freq == '15min':
+            season_length = 96  # 24 hours * 4 (15-min intervals)
+        elif freq == 'H':
+            season_length = 24  # 24 hours
+        else:  # 'D'
+            season_length = 7   # 7 days
+            
+        print(f"Determined season length: {season_length}")
+        self.logger.info(f"Determined season length: {season_length}")
+        return season_length
+    
+    def fit(self, df):
+        """
+        Fit the AutoARIMA model to the provided dataframe.
+        
+        Parameters:
+        -----------
+        df : pandas.DataFrame
+            DataFrame containing the time series data with columns 'ds', 'y', and 'unique_id'.
+            
+        Returns:
+        --------
+        self : AutoARIMAForecast
+            The fitted model instance.
+        """
+        import pandas as pd
+        from statsforecast import StatsForecast
+        from statsforecast.models import AutoARIMA
+        
+        region_suffix = f" for region {self.region_name}" if self.region_name else ""
+        print(f"Fitting AutoARIMA model{region_suffix} with {len(df)} data points...")
+        self.logger.info(f"Fitting AutoARIMA model{region_suffix} with {len(df)} data points")
+        
+        # Store the original data
+        self.data = df.copy()
+        
+        # Sort data by date to ensure proper time ordering
+        self.data = self.data.sort_values('ds').reset_index(drop=True)
+        
+        # Detect frequency
+        self.freq = self._detect_frequency(df)
+        
+        # Set season length if not provided
+        if self.season_length is None:
+            self.season_length = self._detect_season_length(self.freq)
+        
+        # Initialize the AutoARIMA model
+        print(f"Creating AutoARIMA model with season_length={self.season_length}")
+        self.logger.info(f"Creating AutoARIMA model with season_length={self.season_length}")
         models = [AutoARIMA(season_length=self.season_length)]
-        sf = StatsForecast(models=models, freq=self.freq)
-        sf.fit(df=train_data)
         
-        # Generate predictions for test period
-        horizon = len(test_data)
-        forecast_df = sf.forecast(horizon=horizon)
+        # Create and fit the StatsForecast model
+        print("Creating StatsForecast model...")
+        self.logger.info("Creating StatsForecast model")
+        self.model = StatsForecast(
+            models=models,
+            freq=self.freq,
+            n_jobs=-1  # Use all available cores
+        )
         
-        # Calculate residuals
-        residuals = test_data['y'].values - forecast_df['AutoARIMA'].values
+        # Fit the model
+        print("Fitting model to data...")
+        self.logger.info("Fitting model to data")
+        self.model.fit(self.data)
+        self.fitted = True
         
-        # Calculate metrics
-        metrics = {
-            'mae': np.mean(np.abs(residuals)),  # Mean Absolute Error
-            'rmse': np.sqrt(np.mean(residuals**2)),  # Root Mean Square Error
-            'mape': np.mean(np.abs(residuals / test_data['y'].values)) * 100,  # Mean Absolute Percentage Error
-            'r2': 1 - np.sum(residuals**2) / np.sum((test_data['y'].values - np.mean(test_data['y'].values))**2),  # R-squared
-            'aic': self.model.aic,  # Akaike Information Criterion
-            'bic': self.model.bic,  # Bayesian Information Criterion
-        }
+        print("Model fitting complete!")
+        self.logger.info("Model fitting complete")
         
-        # Create DataFrames for results
-        predictions_df = pd.DataFrame({
-            'ds': test_data['ds'],
-            'actual': test_data['y'],
-            'predicted': forecast_df['AutoARIMA'],
-            'residual': residuals
-        })
-        
-        residuals_df = pd.DataFrame({
-            'ds': test_data['ds'],
-            'residual': residuals,
-            'residual_abs': np.abs(residuals),
-            'residual_pct': residuals / test_data['y'].values * 100
-        })
-        
-        return {
-            'metrics': metrics,
-            'predictions': predictions_df,
-            'residuals': residuals_df
-        }
-        
-    def plot_evaluation(self, test_size:float=0.2):
+        return self
+    
+    def forecast(self, h=96, level=None):
         """
-        Plot evaluation results including actual vs predicted values and residuals.
+        Generate forecasts for the next h periods (default: 24 hours).
         
-        Args:
-            test_size (float): Proportion of data to use for testing (default: 0.2)
+        Parameters:
+        -----------
+        h : int, optional
+            The forecast horizon. Default is 96 (24 hours in 15-min intervals).
+        level : list, optional
+            Confidence levels for prediction intervals.
+            
+        Returns:
+        --------
+        pandas.DataFrame
+            DataFrame containing the forecasts.
         """
-        results = self.evaluate_model(test_size)
+        if not self.fitted:
+            error_msg = "Model has not been fitted yet. Call fit() first."
+            print(f"Error: {error_msg}")
+            self.logger.error(error_msg)
+            raise ValueError(error_msg)
         
-        # Create subplots
-        fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 10))
+        region_suffix = f" for region {self.region_name}" if self.region_name else ""
+        # Adjust h based on frequency to always forecast 24 hours
+        original_h = h
+        if self.freq == 'H':
+            h = 24
+        elif self.freq == 'D':
+            h = 1
+            
+        print(f"Generating forecast{region_suffix} for next {h} periods (requested: {original_h}, adjusted based on freq: {self.freq})...")
+        self.logger.info(f"Generating forecast{region_suffix} for next {h} periods (freq: {self.freq})")
         
-        # Plot actual vs predicted
-        ax1.plot(results['predictions']['ds'], results['predictions']['actual'], 
-                label='Actual', alpha=0.7)
-        ax1.plot(results['predictions']['ds'], results['predictions']['predicted'], 
-                label='Predicted', alpha=0.7)
-        ax1.set_title(f'Actual vs Predicted Values for {self.data["unique_id"].iloc[0]}')
-        ax1.set_xlabel('Date')
-        ax1.set_ylabel('Value')
-        ax1.legend()
-        ax1.grid(True)
+        # Create a forecast df with just the unique_id and ds columns
+        import pandas as pd
+        import numpy as np
         
-        # Plot residuals
-        ax2.plot(results['predictions']['ds'], results['predictions']['residual'], 
-                label='Residuals', color='red', alpha=0.7)
-        ax2.axhline(y=0, color='black', linestyle='--', alpha=0.3)
-        ax2.set_title('Residuals Over Time')
-        ax2.set_xlabel('Date')
-        ax2.set_ylabel('Residual')
-        ax2.legend()
-        ax2.grid(True)
+        # Get unique identifiers from the training data
+        unique_ids = self.data['unique_id'].unique()
         
-        plt.tight_layout()
-        plt.show()
+        # Generate future dates based on the last date in the training data
+        # Sort data to ensure we get the actual last date
+        sorted_data = self.data.sort_values('ds')
+        last_date = pd.to_datetime(sorted_data['ds']).max()
+        print(f"Last historical date: {last_date}")
+        self.logger.info(f"Last historical date: {last_date}")
         
-        # Print metrics
-        print("\nModel Evaluation Metrics:")
-        for metric, value in results['metrics'].items():
-            print(f"{metric.upper()}: {value:.4f}")
+        # Determine the next timestamp directly based on the frequency using explicit timedelta
+        if self.freq == '15min':
+            next_timestamp = last_date + pd.Timedelta(minutes=15)
+        elif self.freq == 'H':
+            next_timestamp = last_date + pd.Timedelta(hours=1)
+        else:  # 'D'
+            next_timestamp = last_date + pd.Timedelta(days=1)
+        
+        print(f"Next forecast timestamp: {next_timestamp}")
+        self.logger.info(f"Next forecast timestamp: {next_timestamp}")
+        
+        # Create a dataframe with future dates for forecasting
+        # Use explicit parameters to avoid any ambiguity
+        future_dates = pd.date_range(
+            start=next_timestamp,
+            periods=h,
+            freq=self.freq
+        )
+        
+        # Verify the generated dates - this is important for debugging
+        print(f"Generated future dates from {future_dates[0]} to {future_dates[-1]}")
+        print(f"Time difference between last historical and first forecast: {future_dates[0] - last_date}")
+        self.logger.info(f"Generated future dates from {future_dates[0]} to {future_dates[-1]}")
+        self.logger.info(f"Time difference between last historical and first forecast: {future_dates[0] - last_date}")
+        
+        # Store expected dates for later verification and correction
+        expected_first_date = future_dates[0]
+        expected_dates = future_dates
+        
+        # Create forecast dataframe with all combinations of unique_ids and future dates
+        forecast_input_df = pd.DataFrame()
+        for unique_id in unique_ids:
+            temp_df = pd.DataFrame({
+                'unique_id': [unique_id] * len(future_dates),
+                'ds': future_dates,
+                'y': [np.nan] * len(future_dates)  # Add y column with NaN values
+            })
+            forecast_input_df = pd.concat([forecast_input_df, temp_df])
+        
+        # Ensure proper sorting of the dataframe
+        forecast_input_df = forecast_input_df.sort_values(['unique_id', 'ds']).reset_index(drop=True)
+        
+        print(f"Created forecast input dataframe with {len(forecast_input_df)} rows")
+        self.logger.info(f"Created forecast input dataframe with {len(forecast_input_df)} rows")
+        
+        # Generate forecasts
+        try:
+            if level is not None:
+                print(f"Including confidence intervals at levels: {level}")
+                self.logger.info(f"Including confidence intervals at levels: {level}")
+                self.forecast_df = self.model.forecast(df=forecast_input_df, h=h, level=level)
+            else:
+                self.forecast_df = self.model.forecast(df=forecast_input_df, h=h)
+            
+            print(f"Forecast generated with {len(self.forecast_df)} rows")
+            self.logger.info(f"Forecast generated with {len(self.forecast_df)} rows")
+            
+            # Verify the forecast dates and correct them if needed
+            forecast_dates = pd.to_datetime(self.forecast_df['ds']).sort_values().unique()
+            actual_first_date = forecast_dates[0]
+            
+            print(f"Actual forecast dates: {actual_first_date} to {forecast_dates[-1]}")
+            self.logger.info(f"Actual forecast dates: {actual_first_date} to {forecast_dates[-1]}")
+            
+            # Check if the actual first forecast date is significantly different from what we expected
+            # This is likely due to StatsForecast possibly adding an extra day
+            time_diff = actual_first_date - expected_first_date
+            
+            if abs(time_diff.total_seconds()) > 3600:  # More than an hour difference
+                print(f"WARNING: First forecast date ({actual_first_date}) doesn't match expected date ({expected_first_date})")
+                print(f"Time difference: {time_diff}")
+                self.logger.warning(f"First forecast date ({actual_first_date}) doesn't match expected date ({expected_first_date})")
+                self.logger.warning(f"Time difference: {time_diff}")
+                
+                # Correct the forecast dates to match what we expected
+                print("Correcting forecast dates to match expected timeline...")
+                self.logger.info("Correcting forecast dates to match expected timeline")
+                
+                # Create a mapping from the incorrect dates to the expected dates
+                date_mapping = {}
+                for i, incorrect_date in enumerate(forecast_dates):
+                    if i < len(expected_dates):
+                        date_mapping[incorrect_date] = expected_dates[i]
+                    else:
+                        # If we have more forecast dates than expected (unlikely), extend with the same interval
+                        last_mapped_date = date_mapping[forecast_dates[i-1]]
+                        if self.freq == '15min':
+                            date_mapping[incorrect_date] = last_mapped_date + pd.Timedelta(minutes=15)
+                        elif self.freq == 'H':
+                            date_mapping[incorrect_date] = last_mapped_date + pd.Timedelta(hours=1)
+                        else:  # 'D'
+                            date_mapping[incorrect_date] = last_mapped_date + pd.Timedelta(days=1)
+                
+                # Apply the date correction
+                corrected_forecast = self.forecast_df.copy()
+                corrected_forecast['ds'] = corrected_forecast['ds'].apply(
+                    lambda x: date_mapping.get(pd.to_datetime(x), pd.to_datetime(x))
+                )
+                
+                self.forecast_df = corrected_forecast
+                
+                # Verify the correction
+                corrected_dates = pd.to_datetime(self.forecast_df['ds']).sort_values().unique()
+                print(f"Corrected forecast dates: {corrected_dates[0]} to {corrected_dates[-1]}")
+                self.logger.info(f"Corrected forecast dates: {corrected_dates[0]} to {corrected_dates[-1]}")
+                print(f"Time difference between last historical and first corrected forecast: {corrected_dates[0] - last_date}")
+                self.logger.info(f"Time difference between last historical and first corrected forecast: {corrected_dates[0] - last_date}")
+            
+        except Exception as e:
+            error_msg = f"Error generating forecast: {str(e)}"
+            print(f"Error: {error_msg}")
+            self.logger.error(error_msg)
+            
+            # Try a different approach - use predict instead of forecast
+            print("Attempting alternative forecasting approach...")
+            self.logger.info("Attempting alternative forecasting approach")
+            
+            try:
+                # Some versions of statsforecast might use predict instead of forecast
+                if level is not None:
+                    self.forecast_df = self.model.predict(h=h, level=level)
+                else:
+                    self.forecast_df = self.model.predict(h=h)
+                
+                print(f"Forecast generated with {len(self.forecast_df)} rows")
+                self.logger.info(f"Forecast generated with {len(self.forecast_df)} rows")
+                
+                # Apply the same date correction for the predict method
+                forecast_dates = pd.to_datetime(self.forecast_df['ds']).sort_values().unique()
+                actual_first_date = forecast_dates[0]
+                
+                # If there's a significant time difference, correct the dates
+                if abs((actual_first_date - expected_first_date).total_seconds()) > 3600:
+                    print(f"WARNING: First forecast date from predict ({actual_first_date}) doesn't match expected ({expected_first_date})")
+                    self.logger.warning(f"First forecast date from predict ({actual_first_date}) doesn't match expected ({expected_first_date})")
+                    
+                    # Generate the correct series of dates
+                    corrected_dates = pd.date_range(
+                        start=expected_first_date,
+                        periods=len(forecast_dates),
+                        freq=self.freq
+                    )
+                    
+                    # Map old dates to new dates
+                    date_mapping = dict(zip(sorted(forecast_dates), corrected_dates))
+                    
+                    # Apply correction
+                    corrected_forecast = self.forecast_df.copy()
+                    corrected_forecast['ds'] = corrected_forecast['ds'].apply(
+                        lambda x: date_mapping.get(pd.to_datetime(x), pd.to_datetime(x))
+                    )
+                    
+                    self.forecast_df = corrected_forecast
+                    print("Corrected predict dates to match expected timeline")
+                    self.logger.info("Corrected predict dates to match expected timeline")
+            except Exception as e2:
+                error_msg = f"Error with alternative forecasting approach: {str(e2)}"
+                print(f"Error: {error_msg}")
+                self.logger.error(error_msg)
+                raise ValueError(f"Unable to generate forecast: {str(e)}, then {str(e2)}")
+        
+        return self.forecast_df
