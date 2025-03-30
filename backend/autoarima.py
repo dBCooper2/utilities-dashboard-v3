@@ -382,3 +382,540 @@ class AutoARIMAForecast:
                 raise ValueError(f"Unable to generate forecast: {str(e)}, then {str(e2)}")
         
         return self.forecast_df
+    
+    def plot_acf(self, series=None, lags=40):
+        """
+        Plot the AutoCorrelation Function (ACF).
+        
+        Parameters:
+        -----------
+        series : pandas.Series, optional
+            Time series to plot. If None, uses the 'y' column from the fitted data.
+        lags : int, optional
+            Number of lags to include in the plot.
+            
+        Returns:
+        --------
+        matplotlib.figure.Figure
+            The ACF plot.
+        """
+        import matplotlib.pyplot as plt
+        from statsmodels.graphics.tsaplots import plot_acf
+        
+        region_suffix = f" for region {self.region_name}" if self.region_name else ""
+        print(f"Generating ACF plot{region_suffix} with {lags} lags...")
+        self.logger.info(f"Generating ACF plot{region_suffix} with {lags} lags")
+        
+        if series is None:
+            if self.data is None:
+                error_msg = "No data available. Either provide a series or fit the model first."
+                print(f"Error: {error_msg}")
+                self.logger.error(error_msg)
+                raise ValueError(error_msg)
+            series = self.data['y']
+        
+        fig, ax = plt.subplots(figsize=(10, 6))
+        plot_acf(series, lags=lags, ax=ax)
+        plt.title(f'Autocorrelation Function{region_suffix}')
+        plt.tight_layout()
+        
+        print("ACF plot generated successfully")
+        self.logger.info("ACF plot generated successfully")
+        
+        return fig
+    
+    def plot_pacf(self, series=None, lags=40):
+        """
+        Plot the Partial AutoCorrelation Function (PACF).
+        
+        Parameters:
+        -----------
+        series : pandas.Series, optional
+            Time series to plot. If None, uses the 'y' column from the fitted data.
+        lags : int, optional
+            Number of lags to include in the plot.
+            
+        Returns:
+        --------
+        matplotlib.figure.Figure
+            The PACF plot.
+        """
+        import matplotlib.pyplot as plt
+        from statsmodels.graphics.tsaplots import plot_pacf
+        
+        region_suffix = f" for region {self.region_name}" if self.region_name else ""
+        print(f"Generating PACF plot{region_suffix} with {lags} lags...")
+        self.logger.info(f"Generating PACF plot{region_suffix} with {lags} lags")
+        
+        if series is None:
+            if self.data is None:
+                error_msg = "No data available. Either provide a series or fit the model first."
+                print(f"Error: {error_msg}")
+                self.logger.error(error_msg)
+                raise ValueError(error_msg)
+            series = self.data['y']
+        
+        fig, ax = plt.subplots(figsize=(10, 6))
+        plot_pacf(series, lags=lags, ax=ax)
+        plt.title(f'Partial Autocorrelation Function{region_suffix}')
+        plt.tight_layout()
+        
+        print("PACF plot generated successfully")
+        self.logger.info("PACF plot generated successfully")
+        
+        return fig
+    
+    def adf_test(self, series=None):
+        """
+        Perform the Augmented Dickey-Fuller test for stationarity.
+        
+        Parameters:
+        -----------
+        series : pandas.Series, optional
+            Time series to test. If None, uses the 'y' column from the fitted data.
+            
+        Returns:
+        --------
+        dict
+            Dictionary containing the test statistic, p-value, and critical values.
+        """
+        from statsmodels.tsa.stattools import adfuller
+        
+        region_suffix = f" for region {self.region_name}" if self.region_name else ""
+        print(f"Performing ADF test{region_suffix}...")
+        self.logger.info(f"Performing ADF test{region_suffix}")
+        
+        if series is None:
+            if self.data is None:
+                error_msg = "No data available. Either provide a series or fit the model first."
+                print(f"Error: {error_msg}")
+                self.logger.error(error_msg)
+                raise ValueError(error_msg)
+            series = self.data['y']
+        
+        result = adfuller(series)
+        
+        # Format the result
+        adf_result = {
+            'Test Statistic': result[0],
+            'p-value': result[1],
+            'Critical Values': result[4]
+        }
+        
+        print(f"ADF test results: Test Statistic={adf_result['Test Statistic']:.4f}, p-value={adf_result['p-value']:.4f}")
+        self.logger.info(f"ADF test results: Test Statistic={adf_result['Test Statistic']:.4f}, p-value={adf_result['p-value']:.4f}")
+        
+        return adf_result
+    
+    def evaluate(self, test_size=0.2, metrics=None):
+        """
+        Evaluate the model performance using a train-test split of the initial data.
+        
+        Parameters:
+        -----------
+        test_size : float, optional
+            Proportion of the dataset to include in the test split. Default is 0.2 (20%).
+        metrics : list, optional
+            List of metrics to calculate. If None, uses MAE, MAPE, RMSE, and SMAPE.
+            
+        Returns:
+        --------
+        pandas.DataFrame
+            DataFrame containing evaluation metrics for the model.
+        """
+        if not self.fitted:
+            error_msg = "Model has not been fitted yet. Call fit() first."
+            print(f"Error: {error_msg}")
+            self.logger.error(error_msg)
+            raise ValueError(error_msg)
+        
+        if self.data is None:
+            error_msg = "No data available for evaluation."
+            print(f"Error: {error_msg}")
+            self.logger.error(error_msg)
+            raise ValueError(error_msg)
+        
+        import pandas as pd
+        import numpy as np
+        from functools import partial
+        import utilsforecast.losses as ufl
+        from utilsforecast.evaluation import evaluate
+        
+        region_suffix = f" for region {self.region_name}" if self.region_name else ""
+        print(f"Evaluating model performance{region_suffix} with test_size={test_size}...")
+        self.logger.info(f"Evaluating model performance{region_suffix} with test_size={test_size}")
+        
+        # Sort data by date to ensure proper time ordering
+        sorted_data = self.data.sort_values('ds').reset_index(drop=True)
+        
+        # Calculate the split point
+        split_idx = int(len(sorted_data) * (1 - test_size))
+        if split_idx <= 0 or split_idx >= len(sorted_data):
+            error_msg = f"Invalid test_size: {test_size} results in invalid split index: {split_idx} for dataset of size {len(sorted_data)}"
+            print(f"Error: {error_msg}")
+            self.logger.error(error_msg)
+            raise ValueError(error_msg)
+        
+        # Split the data
+        train_df = sorted_data.iloc[:split_idx].copy()
+        test_df = sorted_data.iloc[split_idx:].copy()
+        
+        print(f"Data split: {len(train_df)} training points, {len(test_df)} test points")
+        self.logger.info(f"Data split: {len(train_df)} training points, {len(test_df)} test points")
+        
+        # Save original model state
+        original_data = self.data.copy()
+        original_forecast_df = self.forecast_df.copy() if self.forecast_df is not None else None
+        
+        try:
+            # Re-fit the model on the training data
+            print("Fitting model on training data...")
+            self.logger.info("Fitting model on training data")
+            self.fit(train_df)
+            
+            # Generate forecast for the test period
+            print(f"Generating forecast for {len(test_df)} test points...")
+            self.logger.info(f"Generating forecast for {len(test_df)} test points")
+            
+            # Determine the forecast horizon needed to cover the test period
+            if self.freq == '15min':
+                h = len(test_df)
+            elif self.freq == 'H':
+                h = len(test_df)
+            else:  # 'D'
+                h = len(test_df)
+            
+            # Generate forecast
+            forecast_df = self.forecast(h=h)
+            
+            # Default metrics
+            if metrics is None:
+                metrics = [
+                    ufl.mae, ufl.mape, 
+                    partial(ufl.mase, seasonality=self.season_length), 
+                    ufl.rmse, ufl.smape
+                ]
+            
+            # Prepare evaluation data by merging test data with forecasts
+            print(f"Merging test data with forecasts...")
+            self.logger.info(f"Merging test data with forecasts")
+            
+            # Ensure forecast dates match test dates
+            merged_df = test_df.merge(forecast_df, on=['unique_id', 'ds'], how='inner')
+            
+            if len(merged_df) == 0:
+                print("WARNING: No matching dates between test data and forecast. Checking for date alignment issues...")
+                self.logger.warning("No matching dates between test data and forecast")
+                
+                # Print date ranges to debug
+                test_dates = pd.to_datetime(test_df['ds']).sort_values()
+                forecast_dates = pd.to_datetime(forecast_df['ds']).sort_values()
+                
+                print(f"Test data date range: {test_dates.min()} to {test_dates.max()}")
+                print(f"Forecast date range: {forecast_dates.min()} to {forecast_dates.max()}")
+                
+                self.logger.info(f"Test data date range: {test_dates.min()} to {test_dates.max()}")
+                self.logger.info(f"Forecast date range: {forecast_dates.min()} to {forecast_dates.max()}")
+                
+                # Try a different approach - use closest dates if exact matches fail
+                print("Attempting alternative evaluation approach with closest dates...")
+                self.logger.info("Attempting alternative evaluation approach with closest dates")
+                
+                # Create a simple DataFrame with accuracy metrics
+                alternative_metrics = pd.DataFrame(columns=['unique_id', 'metric', 'value'])
+                
+                for uid in test_df['unique_id'].unique():
+                    test_subset = test_df[test_df['unique_id'] == uid].sort_values('ds')
+                    forecast_subset = forecast_df[forecast_df['unique_id'] == uid].sort_values('ds')
+                    
+                    # If we have different number of points, take the minimum
+                    min_points = min(len(test_subset), len(forecast_subset))
+                    if min_points > 0:
+                        # Calculate simple metrics manually
+                        actuals = test_subset['y'].values[:min_points]
+                        predictions = forecast_subset[forecast_subset.columns[2]].values[:min_points]
+                        
+                        # Calculate MAE
+                        mae = np.mean(np.abs(actuals - predictions))
+                        
+                        # Add to results
+                        alternative_metrics = pd.concat([
+                            alternative_metrics,
+                            pd.DataFrame({
+                                'unique_id': [uid],
+                                'metric': ['mae'],
+                                'value': [mae]
+                            })
+                        ])
+                
+                if len(alternative_metrics) > 0:
+                    print("Alternative evaluation complete")
+                    self.logger.info("Alternative evaluation complete")
+                    result = alternative_metrics
+                else:
+                    error_msg = "Unable to evaluate model - no matching data points between test and forecast"
+                    print(f"Error: {error_msg}")
+                    self.logger.error(error_msg)
+                    raise ValueError(error_msg)
+            else:
+                # Evaluate with standard approach
+                print(f"Computing evaluation metrics for AutoARIMA model...")
+                self.logger.info(f"Computing evaluation metrics for AutoARIMA model")
+                result = evaluate(merged_df, metrics=metrics, train_df=train_df)
+            
+            print("Evaluation complete")
+            self.logger.info("Evaluation complete")
+            
+        finally:
+            # Restore original model state
+            self.data = original_data
+            self.forecast_df = original_forecast_df
+            
+            # Re-fit the model on the full dataset to ensure it's in the same state as before
+            if original_forecast_df is not None:
+                print("Restoring model to original state with full dataset...")
+                self.logger.info("Restoring model to original state with full dataset")
+                self.fit(original_data)
+        
+        return result
+    
+    def plot_forecast(self, test_df=None, figsize=(12, 6)):
+        """
+        Plot the forecast along with the historical data.
+        
+        Parameters:
+        -----------
+        test_df : pandas.DataFrame, optional
+            Test data to overlay on the plot.
+        figsize : tuple, optional
+            Figure size.
+            
+        Returns:
+        --------
+        matplotlib.figure.Figure
+            The forecast plot.
+        """
+        if not self.fitted or self.forecast_df is None:
+            error_msg = "Model has not been fitted or forecast has not been generated."
+            print(f"Error: {error_msg}")
+            self.logger.error(error_msg)
+            raise ValueError(error_msg)
+        
+        import matplotlib.pyplot as plt
+        import pandas as pd
+        import numpy as np
+        from matplotlib.dates import DateFormatter
+        
+        region_suffix = f" for region {self.region_name}" if self.region_name else ""
+        print(f"Creating forecast plot{region_suffix}...")
+        self.logger.info(f"Creating forecast plot{region_suffix}")
+        
+        # Create the plot
+        fig, ax = plt.subplots(figsize=figsize)
+        
+        # Ensure data is sorted by date
+        sorted_data = self.data.sort_values('ds').reset_index(drop=True)
+        sorted_forecast = self.forecast_df.sort_values('ds').reset_index(drop=True)
+        
+        # Get the last data point from historical data
+        last_historical_date = sorted_data['ds'].max()
+        last_historical_value = sorted_data[sorted_data['ds'] == last_historical_date]['y'].values[0]
+        
+        # Get the first forecast point
+        first_forecast_date = sorted_forecast['ds'].min()
+        first_forecast_value = sorted_forecast[sorted_forecast['ds'] == first_forecast_date][sorted_forecast.columns[2]].values[0]
+        
+        print(f"Last historical date: {last_historical_date}, value: {last_historical_value}")
+        print(f"First forecast date: {first_forecast_date}, value: {first_forecast_value}")
+        print(f"Time difference: {first_forecast_date - last_historical_date}")
+        self.logger.info(f"Last historical date: {last_historical_date}, value: {last_historical_value}")
+        self.logger.info(f"First forecast date: {first_forecast_date}, value: {first_forecast_value}")
+        self.logger.info(f"Time difference: {first_forecast_date - last_historical_date}")
+        
+        # Plot historical data
+        ax.plot(sorted_data['ds'], sorted_data['y'], label='Historical Data')
+        
+        # Create continuous data for plotting by adding interpolated points if needed
+        continuous_forecast_df = sorted_forecast.copy()
+        
+        # Check if there's a large gap between the last historical point and first forecast
+        # We'll define "large" as more than 2x the expected interval based on frequency
+        expected_interval = None
+        if self.freq == '15min':
+            expected_interval = pd.Timedelta(minutes=15)
+        elif self.freq == 'H':
+            expected_interval = pd.Timedelta(hours=1)
+        else:  # 'D'
+            expected_interval = pd.Timedelta(days=1)
+        
+        actual_interval = first_forecast_date - last_historical_date
+        
+        # If the gap is significant, create intermediate points for a smoother transition
+        if actual_interval > expected_interval * 2:
+            print(f"Large gap detected ({actual_interval}), creating interpolation points for smoother transition")
+            self.logger.info(f"Large gap detected ({actual_interval}), creating interpolation points for smoother transition")
+            
+            # Create interpolation points
+            num_points = max(3, int(actual_interval / expected_interval) - 1)  # At least 3 points for smooth interpolation
+            interp_dates = pd.date_range(
+                start=last_historical_date + expected_interval,
+                end=first_forecast_date - expected_interval,
+                periods=num_points
+            )
+            
+            # Linear interpolation between last historical and first forecast values
+            interp_values = np.linspace(last_historical_value, first_forecast_value, num_points + 2)[1:-1]
+            
+            # Create DataFrame with interpolated points
+            interp_df = pd.DataFrame({
+                'unique_id': [continuous_forecast_df['unique_id'].iloc[0]] * len(interp_dates),
+                'ds': interp_dates,
+                sorted_forecast.columns[2]: interp_values
+            })
+            
+            # Add confidence interval columns if they exist with interpolated values
+            for level in [80, 95]:
+                lower_col = f'AutoARIMA-lo-{level}'
+                upper_col = f'AutoARIMA-hi-{level}'
+                
+                if lower_col in continuous_forecast_df.columns and upper_col in continuous_forecast_df.columns:
+                    first_lower = continuous_forecast_df[lower_col].iloc[0]
+                    first_upper = continuous_forecast_df[upper_col].iloc[0]
+                    
+                    # Create widening confidence intervals from historical point to forecast intervals
+                    lower_values = np.linspace(last_historical_value, first_lower, num_points + 2)[1:-1]
+                    upper_values = np.linspace(last_historical_value, first_upper, num_points + 2)[1:-1]
+                    
+                    interp_df[lower_col] = lower_values
+                    interp_df[upper_col] = upper_values
+            
+            # Add interpolation points to forecast dataframe
+            continuous_forecast_df = pd.concat([interp_df, continuous_forecast_df])
+            continuous_forecast_df = continuous_forecast_df.sort_values('ds').reset_index(drop=True)
+            
+            print(f"Added {len(interp_dates)} interpolation points to create smooth transition")
+            self.logger.info(f"Added {len(interp_dates)} interpolation points to create smooth transition")
+        
+        # Also add the last historical point to create a continuous line
+        bridge_point = pd.DataFrame({
+            'unique_id': [continuous_forecast_df['unique_id'].iloc[0]],
+            'ds': [last_historical_date],
+            sorted_forecast.columns[2]: [last_historical_value]
+        })
+        
+        # Add any confidence interval columns if they exist
+        for level in [80, 95]:
+            lower_col = f'AutoARIMA-lo-{level}'
+            upper_col = f'AutoARIMA-hi-{level}'
+            
+            if lower_col in continuous_forecast_df.columns and upper_col in continuous_forecast_df.columns:
+                bridge_point[lower_col] = last_historical_value
+                bridge_point[upper_col] = last_historical_value
+        
+        # Concatenate the bridge point with the forecast data
+        continuous_forecast_df = pd.concat([bridge_point, continuous_forecast_df])
+        continuous_forecast_df = continuous_forecast_df.sort_values('ds').reset_index(drop=True)
+        
+        print(f"Added bridge point to create continuous forecast line")
+        self.logger.info(f"Added bridge point to create continuous forecast line")
+        
+        # Plot forecast with the bridge and interpolation points for a continuous line
+        forecast_series = continuous_forecast_df[sorted_forecast.columns[2]]
+        ax.plot(continuous_forecast_df['ds'], forecast_series, label='Forecast', color='red')
+        
+        # Plot confidence intervals if available
+        for level in [80, 95]:
+            lower_col = f'AutoARIMA-lo-{level}'
+            upper_col = f'AutoARIMA-hi-{level}'
+            
+            if lower_col in continuous_forecast_df.columns and upper_col in continuous_forecast_df.columns:
+                print(f"Adding {level}% confidence interval to plot...")
+                self.logger.info(f"Adding {level}% confidence interval to plot")
+                ax.fill_between(
+                    continuous_forecast_df['ds'],
+                    continuous_forecast_df[lower_col],
+                    continuous_forecast_df[upper_col],
+                    alpha=0.2,
+                    label=f'{level}% Confidence Interval'
+                )
+        
+        # Plot test data if provided
+        if test_df is not None:
+            print("Overlaying test data on plot...")
+            self.logger.info("Overlaying test data on plot")
+            ax.plot(test_df['ds'], test_df['y'], label='Actual Values', linestyle='--', color='green')
+        
+        # Format x-axis dates
+        date_format = DateFormatter('%Y-%m-%d')
+        ax.xaxis.set_major_formatter(date_format)
+        plt.xticks(rotation=45)
+        
+        # Add labels and legend
+        title = f'AutoARIMA Forecast{region_suffix}'
+        ax.set_title(title)
+        ax.set_xlabel('Date')
+        ax.set_ylabel('Value')
+        ax.legend()
+        plt.tight_layout()
+        
+        print("Forecast plot created successfully")
+        self.logger.info("Forecast plot created successfully")
+        
+        return fig
+    
+    def get_results(self):
+        """
+        Get the forecast results.
+        
+        Returns:
+        --------
+        dict
+            Dictionary containing the model results, including:
+            - data: original data
+            - forecast: forecast dataframe
+            - freq: detected frequency
+            - season_length: seasonal period
+            - region_name: name of the region
+        """
+        if not self.fitted:
+            error_msg = "Model has not been fitted yet. Call fit() first."
+            print(f"Error: {error_msg}")
+            self.logger.error(error_msg)
+            raise ValueError(error_msg)
+        
+        results = {
+            'data': self.data,
+            'forecast': self.forecast_df,
+            'freq': self.freq,
+            'season_length': self.season_length,
+            'region_name': self.region_name
+        }
+        
+        print(f"Returning model results for {self.region_name if self.region_name else 'default'}")
+        self.logger.info(f"Returning model results for {self.region_name if self.region_name else 'default'}")
+        
+        return results
+    
+    def get_model_summary(self):
+        """
+        Get a summary of the model configuration and status.
+        
+        Returns:
+        --------
+        dict
+            Dictionary containing model configuration and status.
+        """
+        summary = {
+            'region_name': self.region_name,
+            'fitted': self.fitted,
+            'frequency': self.freq,
+            'season_length': self.season_length,
+            'data_points': len(self.data) if self.data is not None else 0,
+            'forecast_generated': self.forecast_df is not None,
+            'forecast_periods': len(self.forecast_df) if self.forecast_df is not None else 0
+        }
+        
+        print(f"Model summary: {summary}")
+        self.logger.info(f"Model summary: {summary}")
+        
+        return summary
