@@ -1,5 +1,5 @@
-class ProphetForecast:
-    def __init__(self, region_name=None, initial_df=None, season_length=None, log_level='INFO'):
+zclass ProphetForecast:
+    def __init__(self, region_name=None, data=None, season_length=None, log_level='INFO'):
         """
         Initialize the Prophet forecasting model.
         
@@ -7,8 +7,8 @@ class ProphetForecast:
         -----------
         region_name : str, optional
             The name of the region being forecasted.
-        initial_df : pandas.DataFrame, optional
-            Initial dataframe to process during initialization.
+        data : pandas.DataFrame, optional
+            DataFrame containing the time series data with columns 'ds', 'y', and 'unique_id'.
         season_length : int, optional
             The seasonal period of the time series. If None, it will be inferred from the data.
         log_level : str, optional
@@ -39,11 +39,11 @@ class ProphetForecast:
         print(f"Initializing Prophet model for region: {region_name if region_name else 'default'}")
         self.logger.info(f"Initializing Prophet model for region: {region_name if region_name else 'default'}")
         
-        # Process initial dataframe if provided
-        if initial_df is not None:
-            print(f"Processing initial dataframe with {len(initial_df)} rows")
-            self.logger.info(f"Processing initial dataframe with {len(initial_df)} rows")
-            self.fit(initial_df)
+        # Process data if provided
+        if data is not None:
+            print(f"Processing initial dataframe with {len(data)} rows")
+            self.logger.info(f"Processing initial dataframe with {len(data)} rows")
+            self.fit(data)
     
     def _detect_frequency(self, df):
         """
@@ -113,14 +113,15 @@ class ProphetForecast:
         self.logger.info(f"Determined season length: {season_length}")
         return season_length
     
-    def fit(self, df):
+    def fit(self, df=None):
         """
         Fit the Prophet model to the provided dataframe.
         
         Parameters:
         -----------
-        df : pandas.DataFrame
+        df : pandas.DataFrame, optional
             DataFrame containing the time series data with columns 'ds', 'y', and 'unique_id'.
+            If None, uses the data stored in self.data.
             
         Returns:
         --------
@@ -131,17 +132,25 @@ class ProphetForecast:
         from prophet import Prophet
         
         region_suffix = f" for region {self.region_name}" if self.region_name else ""
-        print(f"Fitting Prophet model{region_suffix} with {len(df)} data points...")
-        self.logger.info(f"Fitting Prophet model{region_suffix} with {len(df)} data points")
         
-        # Store the original data
-        self.data = df.copy()
+        # Use provided data or stored data
+        if df is not None:
+            self.data = df.copy()
+        
+        if self.data is None:
+            error_msg = "No data available for fitting. Either provide data or initialize with data."
+            print(f"Error: {error_msg}")
+            self.logger.error(error_msg)
+            raise ValueError(error_msg)
+        
+        print(f"Fitting Prophet model{region_suffix} with {len(self.data)} data points...")
+        self.logger.info(f"Fitting Prophet model{region_suffix} with {len(self.data)} data points")
         
         # Sort data by date to ensure proper time ordering
         self.data = self.data.sort_values('ds').reset_index(drop=True)
         
         # Detect frequency
-        self.freq = self._detect_frequency(df)
+        self.freq = self._detect_frequency(self.data)
         
         # Set season length if not provided
         if self.season_length is None:
@@ -279,130 +288,6 @@ class ProphetForecast:
         self.forecast_components = prophet_forecast
         
         return self.forecast_df
-    
-    def plot_acf(self, series=None, lags=40):
-        """
-        Plot the AutoCorrelation Function (ACF).
-        
-        Parameters:
-        -----------
-        series : pandas.Series, optional
-            Time series to plot. If None, uses the 'y' column from the fitted data.
-        lags : int, optional
-            Number of lags to include in the plot.
-            
-        Returns:
-        --------
-        matplotlib.figure.Figure
-            The ACF plot.
-        """
-        import matplotlib.pyplot as plt
-        from statsmodels.graphics.tsaplots import plot_acf
-        
-        region_suffix = f" for region {self.region_name}" if self.region_name else ""
-        print(f"Generating ACF plot{region_suffix} with {lags} lags...")
-        self.logger.info(f"Generating ACF plot{region_suffix} with {lags} lags")
-        
-        if series is None:
-            if self.data is None:
-                error_msg = "No data available. Either provide a series or fit the model first."
-                print(f"Error: {error_msg}")
-                self.logger.error(error_msg)
-                raise ValueError(error_msg)
-            series = self.data['y']
-        
-        fig, ax = plt.subplots(figsize=(10, 6))
-        plot_acf(series, lags=lags, ax=ax)
-        plt.title(f'Autocorrelation Function{region_suffix}')
-        plt.tight_layout()
-        
-        print("ACF plot generated successfully")
-        self.logger.info("ACF plot generated successfully")
-        
-        return fig
-    
-    def plot_pacf(self, series=None, lags=40):
-        """
-        Plot the Partial AutoCorrelation Function (PACF).
-        
-        Parameters:
-        -----------
-        series : pandas.Series, optional
-            Time series to plot. If None, uses the 'y' column from the fitted data.
-        lags : int, optional
-            Number of lags to include in the plot.
-            
-        Returns:
-        --------
-        matplotlib.figure.Figure
-            The PACF plot.
-        """
-        import matplotlib.pyplot as plt
-        from statsmodels.graphics.tsaplots import plot_pacf
-        
-        region_suffix = f" for region {self.region_name}" if self.region_name else ""
-        print(f"Generating PACF plot{region_suffix} with {lags} lags...")
-        self.logger.info(f"Generating PACF plot{region_suffix} with {lags} lags")
-        
-        if series is None:
-            if self.data is None:
-                error_msg = "No data available. Either provide a series or fit the model first."
-                print(f"Error: {error_msg}")
-                self.logger.error(error_msg)
-                raise ValueError(error_msg)
-            series = self.data['y']
-        
-        fig, ax = plt.subplots(figsize=(10, 6))
-        plot_pacf(series, lags=lags, ax=ax)
-        plt.title(f'Partial Autocorrelation Function{region_suffix}')
-        plt.tight_layout()
-        
-        print("PACF plot generated successfully")
-        self.logger.info("PACF plot generated successfully")
-        
-        return fig
-    
-    def adf_test(self, series=None):
-        """
-        Perform the Augmented Dickey-Fuller test for stationarity.
-        
-        Parameters:
-        -----------
-        series : pandas.Series, optional
-            Time series to test. If None, uses the 'y' column from the fitted data.
-            
-        Returns:
-        --------
-        dict
-            Dictionary containing the test statistic, p-value, and critical values.
-        """
-        from statsmodels.tsa.stattools import adfuller
-        
-        region_suffix = f" for region {self.region_name}" if self.region_name else ""
-        print(f"Performing ADF test{region_suffix}...")
-        self.logger.info(f"Performing ADF test{region_suffix}")
-        
-        if series is None:
-            if self.data is None:
-                error_msg = "No data available. Either provide a series or fit the model first."
-                print(f"Error: {error_msg}")
-                self.logger.error(error_msg)
-                raise ValueError(error_msg)
-            series = self.data['y']
-        
-        result = adfuller(series)
-        
-        # Format the result
-        adf_result = {
-            'Test Statistic': result[0],
-            'p-value': result[1],
-            'Critical Values': result[4]
-        }
-        
-        print(f"ADF test results: Test Statistic={adf_result['Test Statistic']:.4f}, p-value={adf_result['p-value']:.4f}")
-        self.logger.info(f"ADF test results: Test Statistic={adf_result['Test Statistic']:.4f}, p-value={adf_result['p-value']:.4f}")
-        
-        return adf_result
     
     def evaluate(self, h=12, step_size=12, n_windows=5, metrics=None):
         """
@@ -669,9 +554,6 @@ class ProphetForecast:
         region_suffix = f" for region {self.region_name}" if self.region_name else ""
         print(f"Creating forecast plot{region_suffix}...")
         self.logger.info(f"Creating forecast plot{region_suffix}")
-        
-        # We can use Prophet's built-in plotting functionality or create a custom plot
-        # For consistency with AutoARIMA, we'll create a custom plot
         
         # Create the plot
         fig, ax = plt.subplots(figsize=figsize)

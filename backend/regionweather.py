@@ -43,8 +43,24 @@ class RegionWeather:
     def __get_hourly_data(self, hourly:ms.Hourly):
         print('Fetching Hourly Data from Object...')
         data = hourly.fetch()
-        #print(f'Data:\n{data.head()}')
-        #print(f'Columns: {data.columns.tolist()}')
+        if data.empty:
+            print('Warning: No data fetched from Meteostat')
+            return pd.DataFrame()
+            
+        # Ensure the time column is set as the index
+        if 'time' in data.columns:
+            data = data.set_index('time')
+        elif 'date' in data.columns:
+            data = data.set_index('date')
+            
+        # Clean the data
+        data = self.__clean_data(data)
+        
+        # Ensure we have at least 2 data points
+        if len(data) < 2:
+            print('Warning: Not enough data points after cleaning')
+            return pd.DataFrame()
+            
         return data
     
     def __clean_data(self, data):
@@ -68,6 +84,23 @@ class RegionWeather:
 
         Dealing with Missing Data: https://www.e-education.psu.edu/meteo810/content/l5_p4.html
         '''
+        if data.empty:
+            return data
+            
+        # Drop rows with all NaN values
+        data = data.dropna(how='all')
+        
+        # Forward fill missing values
+        data = data.fillna(method='ffill')
+        
+        # Backward fill any remaining missing values
+        data = data.fillna(method='bfill')
+        
+        # Ensure we have at least 2 data points after cleaning
+        if len(data) < 2:
+            print('Warning: Not enough data points after cleaning')
+            return pd.DataFrame()
+            
         return data
     
     # Function to interpolate hourly data to 15-minute increments

@@ -1,6 +1,6 @@
 jupyter
-pandas
-numpy
+pandas==2.0.3
+numpy==1.24.3
 matplotlib
 requests
 meteostat
@@ -14,3 +14,4 @@ prophet
 scikit-learn
 xgboost
 plotly
+tensorflow==2.15.0

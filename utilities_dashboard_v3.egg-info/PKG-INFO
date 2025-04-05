@@ -11,22 +11,21 @@ Classifier: Programming Language :: Python :: 3.7
 Classifier: Programming Language :: Python :: 3.8
 Classifier: Programming Language :: Python :: 3.9
 Requires-Python: >=3.7
-Requires-Dist: jupyter
-Requires-Dist: pandas
-Requires-Dist: numpy
-Requires-Dist: matplotlib
-Requires-Dist: requests
-Requires-Dist: meteostat
-Requires-Dist: datetime
-Requires-Dist: pytz
-Requires-Dist: dotenv
-Requires-Dist: seaborn
-Requires-Dist: statsmodels
-Requires-Dist: statsforecast
-Requires-Dist: prophet
-Requires-Dist: scikit-learn
-Requires-Dist: xgboost
-Requires-Dist: plotly
+Requires-Dist: pandas==2.0.1
+Requires-Dist: numpy==1.24.3
+Requires-Dist: meteostat==1.6.6
+Requires-Dist: requests==2.31.0
+Requires-Dist: statsmodels==0.14.0
+Requires-Dist: statsforecast==1.5.0
+Requires-Dist: prophet==1.1.4
+Requires-Dist: matplotlib==3.7.2
+Requires-Dist: seaborn==0.12.2
+Requires-Dist: sqlalchemy==2.0.23
+Requires-Dist: fastapi==0.104.1
+Requires-Dist: uvicorn==0.24.0
+Requires-Dist: python-dotenv==1.0.0
+Requires-Dist: psycopg2-binary==2.9.9
+Requires-Dist: scikit-learn==1.3.2
 Dynamic: author
 Dynamic: author-email
 Dynamic: classifier

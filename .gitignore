@@ -1,3 +1,7 @@
+# My files
+db_exports/
+/backend_v2/weather_forecasts.db
+
 # Node.js / Next.js
 /node_modules
 /.next
